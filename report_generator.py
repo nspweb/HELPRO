@@ -235,10 +235,16 @@ def _rewrite_cross_sheet_formulas(wb, row_map: dict, canonical_questions: dict, 
     Solusi: TULIS ULANG secara eksplisit & deterministik setiap formula
     rujukan-silang di sheet turunan (Materi Pelatihan, Program Pelatihan,
     INSTRUKTUR, Penyelenggaraan) untuk kolom-kolom responden, terlepas dari
-    apa pun isi formula aslinya. Ini juga sekaligus memperbaiki tampilan
-    '0' di sel yang seharusnya kosong (dibungkus IF supaya sel kosong di
-    KOLOM ISIAN tetap tampil kosong, bukan 0).
+    apa pun isi formula aslinya -- formula POLOS satu-sel
+    (mis. ='KOLOM ISIAN'!C34), BUKAN dibungkus IF() atau apa pun yang bisa
+    memicu Excel mengubahnya jadi rujukan rentang aneh (mis. '=@...O25:AD25').
+
+    Tampilan '0' pada sel yang seharusnya kosong (karena rumus merujuk sel
+    kosong di KOLOM ISIAN, dan Excel menampilkan sel kosong yang dirujuk
+    sebagai 0) diatasi lewat FORMAT ANGKA custom ('0;-0;;@' -- bagian 'nol'
+    dikosongkan), bukan lewat logika formula.
     """
+    hide_zero_format = "0;-0;;@"
     for sheet_name in VIEW_SHEETS:
         if sheet_name not in wb.sheetnames:
             continue
@@ -251,8 +257,9 @@ def _rewrite_cross_sheet_formulas(wb, row_map: dict, canonical_questions: dict, 
             if not view_row:
                 continue
             for col in used_cols:
-                ref = f"'{MASTER_SHEET}'!{col}{master_row}"
-                ws[f"{col}{view_row}"] = f'=IF({ref}="","",{ref})'
+                cell = ws[f"{col}{view_row}"]
+                cell.value = f"='{MASTER_SHEET}'!{col}{master_row}"
+                cell.number_format = hide_zero_format
 
 
 def generate_official_report(
