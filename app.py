@@ -1,65 +1,109 @@
-"""
-Dashboard Evaluasi Penyelenggaraan Pelatihan
-=============================================
-Aplikasi Streamlit untuk memfilter & menganalisis data hasil Google Form
-evaluasi pelatihan, terutama berdasarkan program pelatihan yang diikuti.
-
-Didesain tahan terhadap variasi kecil nama kolom antar sheet/file
-(beda huruf besar-kecil, spasi ekstra, newline, dsb) dengan cara mencocokkan
-kolom secara otomatis (fuzzy matching). Kalau tetap tidak ketemu, ada
-dropdown manual di sidebar untuk memilih kolom yang benar.
-
-Cara menjalankan:
-    streamlit run app.py
-"""
-
 import io
 import re
 import difflib
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 
+from report_generator import generate_official_report, MAX_RESPONDENTS, DEFAULT_CAPACITY
+
 # --------------------------------------------------------------------------
-# KONFIGURASI HALAMAN
+# KONFIGURASI HALAMAN & GAYA VISUAL
 # --------------------------------------------------------------------------
 st.set_page_config(
     page_title="Dashboard Evaluasi Pelatihan",
-    page_icon="📊",
+    page_icon=":bar_chart:",
     layout="wide",
 )
 
+APP_DIR = Path(__file__).parent
+TEMPLATE_PATH = APP_DIR / "assets" / "template_laporan_resmi.xlsx"
 
+PRIMARY = "#1F3B57"      # navy - warna utama
+ACCENT = "#2E6F95"       # biru kalem - aksen
+MUTED = "#6B7A8F"        # abu kebiruan - teks sekunder
+BG_SOFT = "#F4F6F8"
+
+st.markdown(
+    f"""
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+    <style>
+        .block-container {{ padding-top: 2rem; }}
+
+        h1, h2, h3 {{ color: {PRIMARY}; font-weight: 700; }}
+
+        .app-header {{
+            display: flex; align-items: center; gap: 0.6rem;
+            margin-bottom: 0.1rem;
+        }}
+        .app-header i {{ font-size: 1.6rem; color: {ACCENT}; }}
+        .app-subtitle {{ color: {MUTED}; font-size: 0.95rem; margin-top: -0.4rem; }}
+
+        .section-title {{
+            display: flex; align-items: center; gap: 0.5rem;
+            color: {PRIMARY}; font-weight: 600; font-size: 1.15rem;
+            margin-top: 0.5rem;
+        }}
+        .section-title i {{ color: {ACCENT}; }}
+
+        div[data-testid="stMetric"] {{
+            background: {BG_SOFT};
+            border: 1px solid #E2E8EF;
+            border-radius: 10px;
+            padding: 0.9rem 1rem;
+        }}
+
+        .stTabs [data-baseweb="tab"] {{
+            font-weight: 600;
+        }}
+
+        .info-note {{
+            background: {BG_SOFT};
+            border-left: 3px solid {ACCENT};
+            padding: 0.6rem 0.9rem;
+            border-radius: 4px;
+            color: {MUTED};
+            font-size: 0.9rem;
+        }}
+    </style>
+    <div class="app-header">
+        <i class="bi bi-bar-chart-line-fill"></i>
+        <h1 style="margin:0;">Dashboard Evaluasi Penyelenggaraan Pelatihan</h1>
+    </div>
+    <div class="app-subtitle">Filter, analisis, dan ekspor data evaluasi peserta pelatihan</div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def section_title(icon: str, text: str):
+    st.markdown(
+        f'<div class="section-title"><i class="bi {icon}"></i>{text}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+# --------------------------------------------------------------------------
+# UTILITAS PENCOCOKAN KOLOM (tahan variasi nama kolom antar file/sheet)
+# --------------------------------------------------------------------------
 def normalize(text: str) -> str:
-    """Normalisasi teks kolom: lowercase, hapus spasi berlebih/newline,
-    supaya 'Program Pelatihan Yang Diikuti ' == 'Program pelatihan yang di ikuti'."""
-    text = str(text).lower()
-    text = text.replace("\n", " ")
-    text = re.sub(r"[^a-z0-9]+", " ", text)  # buang tanda baca, gabung jadi spasi
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+    text = str(text).lower().replace("\n", " ")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def best_match(canonical: str, columns, cutoff: float = 0.55):
-    """Cari kolom di `columns` yang paling mirip dengan teks `canonical`."""
     norm_canonical = normalize(canonical)
     norm_cols = {c: normalize(c) for c in columns}
-
-    # 1) exact match setelah normalisasi
     for original, norm in norm_cols.items():
         if norm == norm_canonical:
             return original
-
-    # 2) substring match (misal canonical adalah bagian dari nama kolom atau sebaliknya)
     for original, norm in norm_cols.items():
         if norm_canonical in norm or norm in norm_canonical:
             return original
-
-    # 3) fuzzy match pakai difflib
-    matches = difflib.get_close_matches(
-        norm_canonical, list(norm_cols.values()), n=1, cutoff=cutoff
-    )
+    matches = difflib.get_close_matches(norm_canonical, list(norm_cols.values()), n=1, cutoff=cutoff)
     if matches:
         for original, norm in norm_cols.items():
             if norm == matches[0]:
@@ -68,13 +112,12 @@ def best_match(canonical: str, columns, cutoff: float = 0.55):
 
 
 # --------------------------------------------------------------------------
-# DEFINISI "PERTANYAAN KANONIK" — teks acuan untuk mencocokkan kolom
+# DEFINISI PERTANYAAN KANONIK
 # --------------------------------------------------------------------------
 PROGRAM_CANONICAL = "Program pelatihan yang diikuti"
 TIMESTAMP_CANONICAL = "Timestamp"
 INFO_SOURCE_CANONICAL = "Dari mana anda mendapatkan informasi tentang pelatihan"
 
-# label ringkas -> teks pertanyaan acuan (dipakai untuk matching & label grafik)
 SCORE_QUESTIONS = {
     "Info mudah didapat": "Apakah informasi pelatihan mudah untuk didapatkan?",
     "Pendaftaran mudah": "Apakah pendaftaran dan tahapannya mudah untuk dilakukan?",
@@ -121,7 +164,11 @@ def load_data(file, sheet_name) -> pd.DataFrame:
 # --------------------------------------------------------------------------
 # SIDEBAR - UPLOAD
 # --------------------------------------------------------------------------
-st.sidebar.title("⚙️ Data & Filter")
+with st.sidebar:
+    st.markdown(
+        '<div class="section-title"><i class="bi bi-sliders"></i>Data &amp; Filter</div>',
+        unsafe_allow_html=True,
+    )
 
 uploaded_file = st.sidebar.file_uploader(
     "Upload file Excel hasil Google Form (.xlsx)",
@@ -129,10 +176,11 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 if uploaded_file is None:
-    st.title("📊 Dashboard Evaluasi Penyelenggaraan Pelatihan")
-    st.info(
-        "👈 Silakan upload file **Excel hasil Google Form** (.xlsx) di sidebar "
-        "kiri untuk mulai memfilter dan menganalisis data."
+    st.markdown(
+        '<div class="info-note"><i class="bi bi-info-circle"></i>&nbsp; '
+        "Silakan upload file Excel hasil Google Form (.xlsx) di sidebar kiri "
+        "untuk mulai memfilter dan menganalisis data.</div>",
+        unsafe_allow_html=True,
     )
     st.stop()
 
@@ -153,12 +201,11 @@ auto_timestamp_col = best_match(TIMESTAMP_CANONICAL, all_columns)
 auto_info_col = best_match(INFO_SOURCE_CANONICAL, all_columns)
 
 with st.sidebar.expander(
-    "🔧 Pemetaan kolom" + ("" if auto_program_col else " ⚠️ perlu dicek"),
+    "Pemetaan kolom" + ("" if auto_program_col else " -- perlu dicek"),
     expanded=(auto_program_col is None),
 ):
     st.caption(
-        "Sistem mencocokkan kolom secara otomatis. Kalau salah / tidak ketemu, "
-        "pilih manual di sini."
+        "Kolom dicocokkan otomatis. Kalau salah / tidak ketemu, pilih manual di sini."
     )
     options_with_none = ["(tidak ada)"] + all_columns
 
@@ -191,24 +238,23 @@ with st.sidebar.expander(
 if not program_col:
     st.error(
         "Tidak berhasil menemukan kolom 'Program pelatihan yang diikuti'. "
-        "Silakan pilih manual di panel **🔧 Pemetaan kolom** pada sidebar."
+        "Silakan pilih manual di panel Pemetaan kolom pada sidebar."
     )
     st.stop()
 
 # cocokkan kolom-kolom skor & komentar
-score_col_map = {}  # label ringkas -> nama kolom asli di df
+score_col_map = {}
 for label, question in SCORE_QUESTIONS.items():
     match = best_match(question, all_columns)
     if match:
         score_col_map[label] = match
 
-comment_col_map = {}  # label ringkas -> nama kolom asli di df
+comment_col_map = {}
 for label, question in COMMENT_LABELS.items():
     match = best_match(question, all_columns)
     if match:
         comment_col_map[label] = match
 
-# pastikan kolom skor benar-benar numerik (buang kalau ternyata bukan)
 for label, col in list(score_col_map.items()):
     numeric_series = pd.to_numeric(df_raw[col], errors="coerce")
     if numeric_series.notna().sum() == 0:
@@ -221,56 +267,27 @@ for label, col in list(score_col_map.items()):
 # --------------------------------------------------------------------------
 program_options = sorted(df_raw[program_col].dropna().astype(str).unique().tolist())
 selected_programs = st.sidebar.multiselect(
-    "🎓 Program pelatihan yang diikuti",
+    "Program pelatihan yang diikuti",
     options=program_options,
     default=program_options,
     help="Kosongkan lalu pilih ulang untuk memfilter satu/lebih program tertentu.",
 )
 
 df_work = df_raw.copy()
-date_range = None
 if timestamp_col:
     df_work[timestamp_col] = pd.to_datetime(df_work[timestamp_col], errors="coerce")
-    min_date = df_work[timestamp_col].min()
-    max_date = df_work[timestamp_col].max()
-    if pd.notna(min_date) and pd.notna(max_date):
-        date_range = st.sidebar.date_input(
-            "📅 Rentang tanggal pengisian",
-            value=(min_date.date(), max_date.date()),
-            min_value=min_date.date(),
-            max_value=max_date.date(),
-        )
-
-selected_sources = None
-if info_col:
-    source_options = sorted(df_work[info_col].dropna().astype(str).unique().tolist())
-    with st.sidebar.expander("Filter tambahan: sumber informasi"):
-        selected_sources = st.multiselect(
-            "Sumber informasi pelatihan", options=source_options, default=source_options
-        )
 
 # --------------------------------------------------------------------------
 # APPLY FILTERS
 # --------------------------------------------------------------------------
 df_filtered = df_work[df_work[program_col].astype(str).isin(selected_programs)]
 
-if timestamp_col and date_range and len(date_range) == 2:
-    start, end = date_range
-    df_filtered = df_filtered[
-        (df_filtered[timestamp_col].dt.date >= start)
-        & (df_filtered[timestamp_col].dt.date <= end)
-    ]
-
-if info_col and selected_sources is not None:
-    df_filtered = df_filtered[df_filtered[info_col].astype(str).isin(selected_sources)]
-
 # --------------------------------------------------------------------------
-# HEADER & METRIK RINGKAS
+# METRIK RINGKAS
 # --------------------------------------------------------------------------
-st.title("📊 Dashboard Evaluasi Penyelenggaraan Pelatihan")
 st.caption(
-    f"Sheet **'{sheet_choice}'** — Menampilkan **{len(df_filtered)}** dari "
-    f"**{len(df_raw)}** total responden berdasarkan filter yang dipilih."
+    f"Sheet '{sheet_choice}' -- Menampilkan {len(df_filtered)} dari "
+    f"{len(df_raw)} total responden berdasarkan filter yang dipilih."
 )
 
 score_cols = list(score_col_map.values())
@@ -287,20 +304,20 @@ if score_cols:
 
 if len(score_col_map) < len(SCORE_QUESTIONS):
     missing = len(SCORE_QUESTIONS) - len(score_col_map)
-    st.caption(f"ℹ️ {missing} pertanyaan skor tidak terdeteksi di sheet ini dan dilewati.")
+    st.caption(f"Catatan: {missing} pertanyaan skor tidak terdeteksi di sheet ini dan dilewati.")
 
 st.divider()
 
 # --------------------------------------------------------------------------
 # TABS
 # --------------------------------------------------------------------------
-tab_data, tab_ringkasan, tab_komentar = st.tabs(
-    ["📄 Data Terfilter", "📈 Ringkasan & Grafik", "💬 Komentar & Keluhan"]
+tab_data, tab_ringkasan, tab_komentar, tab_resmi = st.tabs(
+    ["Data Terfilter", "Ringkasan & Grafik", "Komentar & Keluhan", "Laporan Resmi"]
 )
 
 # --- TAB 1: DATA TABEL ---
 with tab_data:
-    st.subheader("Data Responden (sesuai filter)")
+    section_title("bi-table", "Data Responden (sesuai filter)")
     st.dataframe(df_filtered, use_container_width=True, hide_index=True)
 
     csv_bytes = df_filtered.to_csv(index=False).encode("utf-8-sig")
@@ -311,18 +328,20 @@ with tab_data:
 
     dcol1, dcol2 = st.columns(2)
     dcol1.download_button(
-        "⬇️ Download CSV",
+        "Download CSV",
         data=csv_bytes,
         file_name="evaluasi_pelatihan_terfilter.csv",
         mime="text/csv",
         use_container_width=True,
+        icon=":material/download:",
     )
     dcol2.download_button(
-        "⬇️ Download Excel",
+        "Download Excel (data mentah)",
         data=excel_bytes,
         file_name="evaluasi_pelatihan_terfilter.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
+        icon=":material/download:",
     )
 
 # --- TAB 2: RINGKASAN & GRAFIK ---
@@ -330,7 +349,7 @@ with tab_ringkasan:
     if not score_col_map:
         st.warning("Tidak ada kolom skor numerik yang terdeteksi pada sheet ini.")
     else:
-        st.subheader("Jumlah Responden per Program")
+        section_title("bi-people", "Jumlah Responden per Program")
         count_df = (
             df_filtered[program_col]
             .astype(str)
@@ -339,10 +358,11 @@ with tab_ringkasan:
             .reset_index(name="Jumlah")
         )
         fig_count = px.bar(count_df, x="Jumlah", y="Program", orientation="h", text="Jumlah")
-        fig_count.update_layout(yaxis_title="", xaxis_title="Jumlah Responden")
+        fig_count.update_traces(marker_color=ACCENT)
+        fig_count.update_layout(yaxis_title="", xaxis_title="Jumlah Responden", plot_bgcolor="white")
         st.plotly_chart(fig_count, use_container_width=True)
 
-        st.subheader("Rata-rata Skor per Aspek Pelatihan")
+        section_title("bi-bar-chart-steps", "Rata-rata Skor per Aspek Pelatihan")
         avg_scores = df_filtered[score_cols].mean(numeric_only=True).reset_index()
         avg_scores.columns = ["col", "Rata-rata"]
         inv_map = {v: k for k, v in score_col_map.items()}
@@ -356,11 +376,12 @@ with tab_ringkasan:
             range_x=[0, 5],
             text=avg_scores["Rata-rata"].round(2),
         )
-        fig_avg.update_layout(yaxis_title="", xaxis_title="Rata-rata Skor (1-5)")
+        fig_avg.update_traces(marker_color=PRIMARY)
+        fig_avg.update_layout(yaxis_title="", xaxis_title="Rata-rata Skor (1-5)", plot_bgcolor="white")
         st.plotly_chart(fig_avg, use_container_width=True)
 
         if len(selected_programs) > 1:
-            st.subheader("Perbandingan Rata-rata Skor Antar Program")
+            section_title("bi-bar-chart-line", "Perbandingan Rata-rata Skor Antar Program")
             melt_df = df_filtered.melt(
                 id_vars=[program_col], value_vars=score_cols, var_name="col", value_name="Skor"
             )
@@ -374,14 +395,16 @@ with tab_ringkasan:
                 orientation="h",
                 barmode="group",
                 range_x=[0, 5],
+                color_discrete_sequence=[PRIMARY, ACCENT, "#8FA6BD", "#C9D4DE", "#4C7A9C"],
             )
             fig_comp.update_layout(
-                yaxis_title="", xaxis_title="Rata-rata Skor (1-5)", legend_title="Program"
+                yaxis_title="", xaxis_title="Rata-rata Skor (1-5)", legend_title="Program",
+                plot_bgcolor="white",
             )
             st.plotly_chart(fig_comp, use_container_width=True)
 
         if info_col:
-            st.subheader("Sumber Informasi Pelatihan")
+            section_title("bi-pie-chart", "Sumber Informasi Pelatihan")
             src_df = (
                 df_filtered[info_col]
                 .astype(str)
@@ -389,12 +412,15 @@ with tab_ringkasan:
                 .rename_axis("Sumber")
                 .reset_index(name="Jumlah")
             )
-            fig_src = px.pie(src_df, names="Sumber", values="Jumlah", hole=0.4)
+            fig_src = px.pie(
+                src_df, names="Sumber", values="Jumlah", hole=0.45,
+                color_discrete_sequence=[PRIMARY, ACCENT, "#8FA6BD", "#C9D4DE", "#4C7A9C", "#A9B8C7"],
+            )
             st.plotly_chart(fig_src, use_container_width=True)
 
 # --- TAB 3: KOMENTAR & KELUHAN ---
 with tab_komentar:
-    st.subheader("Komentar, Saran, dan Keluhan Peserta")
+    section_title("bi-chat-left-text", "Komentar, Saran, dan Keluhan Peserta")
 
     if not comment_col_map:
         st.info("Tidak ada kolom komentar/keluhan yang terdeteksi pada sheet ini.")
@@ -411,6 +437,103 @@ with tab_komentar:
             st.info("Tidak ada komentar untuk kombinasi filter ini.")
         else:
             for program, group in comments.groupby(program_col):
-                with st.expander(f"**{program}** ({len(group)} komentar)"):
+                with st.expander(f"{program} ({len(group)} komentar)"):
                     for _, row in group.iterrows():
                         st.markdown(f"- {row[picked_col]}")
+
+# --- TAB 4: LAPORAN RESMI (format Kemnaker, sama persis dengan template) ---
+with tab_resmi:
+    section_title("bi-file-earmark-spreadsheet", "Ekspor ke Format Laporan Resmi")
+    st.markdown(
+        '<div class="info-note"><i class="bi bi-info-circle"></i>&nbsp; '
+        "Laporan ini mengikuti format resmi (kop surat, tabel nilai per peserta, "
+        "kategori BAIK/SANGAT BAIK) persis seperti file contoh yang diberikan. "
+        "Pilih <b>satu program</b> yang mewakili satu angkatan/kelas pelatihan, "
+        "supaya jumlah peserta pada laporan sesuai.</div>",
+        unsafe_allow_html=True,
+    )
+    st.write("")
+
+    report_program = st.selectbox(
+        "Program pelatihan untuk laporan ini",
+        options=program_options,
+        index=0,
+    )
+    df_report = df_work[df_work[program_col].astype(str) == report_program]
+
+    n_report = len(df_report)
+    if n_report == 0:
+        st.warning("Tidak ada responden pada program ini.")
+    else:
+        info_cols = st.columns(2)
+        info_cols[0].metric("Jumlah Peserta", n_report)
+        info_cols[1].metric("Pertanyaan Terisi", f"{len([l for l in SCORE_QUESTIONS if l in score_col_map])}/{len(SCORE_QUESTIONS)}")
+
+        if n_report > DEFAULT_CAPACITY:
+            st.info(
+                f"Jumlah peserta ({n_report}) lebih dari {DEFAULT_CAPACITY}, jadi kolom cadangan "
+                f"pada template akan otomatis dipakai (kapasitas total {MAX_RESPONDENTS} peserta)."
+            )
+
+        if n_report > MAX_RESPONDENTS:
+            st.warning(
+                f"Jumlah peserta ({n_report}) melebihi kapasitas maksimum template ({MAX_RESPONDENTS}). "
+                f"Hanya data {MAX_RESPONDENTS} peserta pertama yang akan dimasukkan. "
+                "Persempit dulu datanya (mis. per angkatan) untuk hasil yang akurat."
+            )
+
+        st.write("")
+        st.markdown("**Informasi kop laporan** (wajib diisi)")
+        c1, c2 = st.columns(2)
+        training_title = c1.text_input("Nama pelatihan / kompetensi *", value="")
+        instructor_name = c2.text_input("Nama instruktur *", value="")
+        date_text = st.text_input(
+            "Teks tanggal pelaksanaan * (mis. 'TGL Senin 3 Agustus S.D Jumat 28 Agustus 2026')",
+            value="",
+        )
+
+        missing_fields = [
+            label
+            for label, value in [
+                ("Nama pelatihan / kompetensi", training_title),
+                ("Nama instruktur", instructor_name),
+                ("Teks tanggal pelaksanaan", date_text),
+            ]
+            if not value.strip()
+        ]
+
+        if missing_fields:
+            st.caption(
+                "Lengkapi dulu: " + ", ".join(missing_fields) + " -- laporan belum bisa dibuat."
+            )
+
+        if st.button(
+            "Buat Laporan Resmi (.xlsx)",
+            type="primary",
+            icon=":material/description:",
+            disabled=bool(missing_fields),
+        ):
+            try:
+                report_bytes, meta = generate_official_report(
+                    str(TEMPLATE_PATH),
+                    df_report,
+                    score_col_map,
+                    SCORE_QUESTIONS,
+                    program_name=report_program,
+                    training_title=training_title,
+                    date_text=date_text,
+                    instructor_name=instructor_name,
+                )
+                st.success(
+                    f"Laporan berhasil dibuat -- {meta['respondents_used']} peserta, "
+                    f"{meta['questions_matched']}/{meta['questions_total']} pertanyaan terisi."
+                )
+                st.download_button(
+                    "Unduh Laporan Resmi (.xlsx)",
+                    data=report_bytes,
+                    file_name=f"Laporan_Evaluasi_{report_program[:40].strip().replace(' ', '_')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    icon=":material/download:",
+                )
+            except Exception as e:
+                st.error(f"Gagal membuat laporan: {e}")
