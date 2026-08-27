@@ -71,6 +71,13 @@ def _find_question_row(ws, question_text: str, cutoff: float = 0.8):
         if not cell.value:
             continue
         norm = _normalize(cell.value)
+        # Baris judul section (mis. "PROGRAM PELATIHAN", "INSTRUKTUR") bukan
+        # baris pertanyaan asli -- semua pertanyaan asli di template ini
+        # diawali "Apakah" atau "Bagaimana". Lewati baris yang bukan
+        # pertanyaan supaya tidak pernah ikut cocok lewat jalan pintas
+        # fuzzy-substring di bawah.
+        if not (norm.startswith("apakah") or norm.startswith("bagaimana")):
+            continue
         if norm == target:
             return cell.row
         ratio = difflib.SequenceMatcher(None, norm, target).ratio()
@@ -249,7 +256,20 @@ def _rewrite_cross_sheet_formulas(wb, row_map: dict, canonical_questions: dict, 
         if sheet_name not in wb.sheetnames:
             continue
         ws = wb[sheet_name]
-        for label, master_row in row_map.items():
+        # PENTING: hanya proses label yang MEMANG milik sheet ini (lihat
+        # SECTION_LABELS). Sebelumnya kode ini mencoba mencocokkan SEMUA 17
+        # pertanyaan ke SETIAP sheet turunan -- akibatnya, pertanyaan milik
+        # section lain (mis. "Program menarik" dari sheet "Program Pelatihan")
+        # ikut dicari di sheet "Penyelenggaraan", dan karena _find_question_row
+        # punya jalan pintas fuzzy-substring, ia bisa salah nempel ke baris
+        # judul section (mis. baris header "II PROGRAM PELATIHAN") lalu
+        # menimpanya dengan formula skor -- itulah sumber baris header yang
+        # tiba-tiba terisi angka di sheet Penyelenggaraan.
+        allowed_labels = SECTION_LABELS.get(sheet_name, list(row_map.keys()))
+        for label in allowed_labels:
+            if label not in row_map:
+                continue
+            master_row = row_map[label]
             question_text = canonical_questions.get(label)
             if not question_text:
                 continue
