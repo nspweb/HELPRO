@@ -1,2 +1,12 @@
-libreoffice-writer
+# LibreOffice core + writer (untuk dokumen teks)
+libreoffice
 libreoffice-common
+libreoffice-writer
+
+# Font support agar PDF bisa render dengan benar
+fontconfig
+fonts-dejavu-core
+fonts-dejavu-extra
+
+# Java runtime (opsional, untuk menghindari warning javaldx)
+default-jre
