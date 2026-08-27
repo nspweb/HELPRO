@@ -1,6 +1,11 @@
 import re
 import difflib
+import shutil
+import subprocess
+import tempfile
+import uuid
 from io import BytesIO
+from pathlib import Path
 
 import openpyxl
 from openpyxl.styles import Border, Side
@@ -100,8 +105,12 @@ def _format_training_title(training_title: str) -> str:
 
 def _format_program_title(program_name: str) -> str:
     """'Daily Make Up 3' -> 'PROGRAM PELATIHAN DASAR DAILY MAKE UP PAKET 3'.
+    'Produksi Roti dan Kue 4 (Kab. Kolaka Timur)' -> 'PROGRAM PELATIHAN DASAR
+    PRODUKSI ROTI DAN KUE PAKET 4' (keterangan kab/kota dibuang).
 
     - Selalu CAPSLOCK.
+    - Keterangan kab/kota dalam tanda kurung di akhir nama dibuang, supaya
+      angka batch tetap terdeteksi di posisi akhir.
     - Kalau nama program diakhiri angka batch (mis. '... 3') dan belum ada
       kata 'PAKET', kata 'PAKET' otomatis disisipkan sebelum angka tsb.
     """
@@ -109,6 +118,9 @@ def _format_program_title(program_name: str) -> str:
     if not name:
         return ""
     name = re.sub(r"^PROGRAM PELATIHAN DASAR\s+", "", name)
+    # Buang keterangan kab/kota dalam tanda kurung, mis. "(KAB. KOLAKA TIMUR)".
+    name = re.sub(r"\s*\([^)]*\)", "", name)
+    name = re.sub(r"\s+", " ", name).strip()
     if "PAKET" not in name:
         match = re.match(r"^(.*\S)\s+(\d+)$", name)
         if match:
@@ -173,6 +185,84 @@ def _update_divisor_everywhere(wb, n_respondents: int, use_secondary: bool):
                 cell.value = f"=SUM({new_range})/{n_respondents}"
 
 
+def _style_histogram_chart(wb, training_title: str):
+    """Samakan style chart di sheet 'Histogram' dengan referensi yang
+    diminta: batang abu-abu gelap solid (tanpa border), judul tanpa garis
+    bawah, dan '(NAMA PELATIHAN)' pada judul diganti nama pelatihan aktual.
+    Sumbu Y dikunci 4,3 - 4,8 (interval 0,1) sesuai contoh."""
+    if "Histogram" not in wb.sheetnames:
+        return
+    ws = wb["Histogram"]
+    if not ws._charts:
+        return
+    chart = ws._charts[0]
+
+    # ---- Judul: ganti "(NAMA PELATIHAN)" jadi nama pelatihan aktual ----
+    try:
+        runs = chart.title.tx.rich.p[0].r
+        label = re.sub(r"\s+", " ", str(training_title).strip()).upper()
+        for run in runs:
+            if run.t and "NAMA PELATIHAN" in run.t:
+                run.t = f" ({label})" if label else " (NAMA PELATIHAN)"
+            if run.rPr is not None:
+                run.rPr.u = None   # buang garis bawah
+                run.rPr.b = True   # tebal, sesuai contoh
+    except (AttributeError, IndexError):
+        pass
+
+    # ---- Batang: abu-abu gelap solid, tanpa border ----
+    for ser in chart.series:
+        ser.graphicalProperties.solidFill = "595959"
+        ser.graphicalProperties.line.noFill = True
+
+    # ---- Sumbu nilai: 4,3 - 4,8, interval 0,1 (sesuai contoh) ----
+    chart.y_axis.scaling.min = 4.3
+    chart.y_axis.scaling.max = 4.8
+    chart.y_axis.majorUnit = 0.1
+
+
+def convert_xlsx_to_pdf(xlsx_bytes: bytes, timeout: int = 90) -> bytes:
+    """Konversi file .xlsx (bytes) menjadi .pdf (bytes) memakai LibreOffice
+    headless. Butuh binary 'soffice' tersedia di server (paket sistem
+    'libreoffice-calc' — bukan pip package, lihat packages.txt).
+
+    Dipisah ke fungsi sendiri (bukan bagian dari generate_official_report)
+    supaya proses Excel-nya tidak gagal/lambat kalau LibreOffice belum
+    terpasang; caller bisa menangani ini sebagai fitur opsional.
+    """
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        raise RuntimeError(
+            "LibreOffice ('soffice') tidak ditemukan di server. "
+            "Tambahkan 'libreoffice-calc' ke packages.txt agar konversi ke PDF bisa jalan."
+        )
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_dir_path = Path(tmp_dir)
+        in_path = tmp_dir_path / f"{uuid.uuid4().hex}.xlsx"
+        in_path.write_bytes(xlsx_bytes)
+
+        # --convert-to pdf:calc_pdf_Export -> pakai filter Calc (bukan Writer)
+        # supaya layout print per-sheet (page setup, area cetak) yang sudah
+        # diatur di template ikut terpakai.
+        result = subprocess.run(
+            [
+                soffice, "--headless", "--norestore",
+                "--convert-to", "pdf:calc_pdf_Export",
+                "--outdir", str(tmp_dir_path),
+                str(in_path),
+            ],
+            capture_output=True, timeout=timeout,
+        )
+
+        out_path = in_path.with_suffix(".pdf")
+        if not out_path.exists():
+            stderr = result.stderr.decode("utf-8", errors="ignore")
+            raise RuntimeError(f"Konversi ke PDF gagal. Detail teknis: {stderr or result.stdout.decode('utf-8', errors='ignore')}")
+
+        return out_path.read_bytes()
+
+
 def generate_official_report(
     template_path: str,
     df_filtered,
@@ -198,6 +288,9 @@ def generate_official_report(
 
     # ---- Garis pemisah di atas judul + samakan teks judul di semua sheet ----
     _sync_titles_and_separator_lines(wb)
+
+    # ---- Style chart Histogram + judul dinamis sesuai nama pelatihan ----
+    _style_histogram_chart(wb, training_title or program_name)
 
     # ---- Header ----
     ws_master["A6"] = REPORT_TITLE

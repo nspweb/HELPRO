@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 
-from report_generator import generate_official_report, MAX_RESPONDENTS, DEFAULT_CAPACITY
+from report_generator import generate_official_report, convert_xlsx_to_pdf, MAX_RESPONDENTS, DEFAULT_CAPACITY
 
 # --------------------------------------------------------------------------
 # KONFIGURASI HALAMAN & GAYA VISUAL
@@ -524,16 +524,50 @@ with tab_resmi:
                     date_text=date_text,
                     instructor_name=instructor_name,
                 )
+                st.session_state["report_bytes"] = report_bytes
+                st.session_state["report_meta"] = meta
+                st.session_state["report_fname_base"] = report_program[:40].strip().replace(" ", "_")
+                st.session_state.pop("report_pdf_bytes", None)  # laporan baru -> PDF lama tidak berlaku lagi
                 st.success(
                     f"Laporan berhasil dibuat -- {meta['respondents_used']} peserta, "
                     f"{meta['questions_matched']}/{meta['questions_total']} pertanyaan terisi."
                 )
-                st.download_button(
-                    "Unduh Laporan Resmi (.xlsx)",
-                    data=report_bytes,
-                    file_name=f"Laporan_Evaluasi_{report_program[:40].strip().replace(' ', '_')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    icon=":material/download:",
-                )
             except Exception as e:
                 st.error(f"Gagal membuat laporan: {e}")
+
+        if st.session_state.get("report_bytes"):
+            fname_base = st.session_state["report_fname_base"]
+            col_xlsx, col_pdf = st.columns(2)
+            with col_xlsx:
+                st.download_button(
+                    "Unduh Laporan Resmi (.xlsx)",
+                    data=st.session_state["report_bytes"],
+                    file_name=f"Laporan_Evaluasi_{fname_base}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    icon=":material/download:",
+                    key="dl_xlsx_report",
+                )
+            with col_pdf:
+                if not st.session_state.get("report_pdf_bytes"):
+                    if st.button(
+                        "Konversi ke PDF",
+                        icon=":material/picture_as_pdf:",
+                        key="btn_convert_pdf",
+                    ):
+                        try:
+                            with st.spinner("Mengonversi laporan ke PDF..."):
+                                st.session_state["report_pdf_bytes"] = convert_xlsx_to_pdf(
+                                    st.session_state["report_bytes"]
+                                )
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Gagal mengonversi ke PDF: {e}")
+                else:
+                    st.download_button(
+                        "Unduh Laporan Resmi (.pdf)",
+                        data=st.session_state["report_pdf_bytes"],
+                        file_name=f"Laporan_Evaluasi_{fname_base}.pdf",
+                        mime="application/pdf",
+                        icon=":material/download:",
+                        key="dl_pdf_report",
+                    )
