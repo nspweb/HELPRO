@@ -25,22 +25,18 @@ KET_COL = "AC"
 
 MASTER_SHEET = "KOLOM ISIAN"
 
-# Judul laporan tiap sheet ("HASIL ANALISIS EVALUASI") + posisi baris judul,
-# supaya bisa dipasang garis pemisah (kop) dan teks judul yang konsisten
-# dengan sheet master di SEMUA sheet, bukan cuma KOLOM ISIAN.
-# value: (baris_judul, kolom_terakhir_untuk_garis)
+VIEW_SHEETS = ["Materi Pelatihan", "Program Pelatihan", "INSTRUKTUR", "Penyelenggaraan"]
+
 SHEET_TITLE_ROWS = {
-    "KOLOM ISIAN": (6, 29),      # A..AC
-    "Histogram": (6, 4),         # A..D (mengikuti 'Materi Pelatihan' via formula)
+    "KOLOM ISIAN": (6, 29),
+    "Histogram": (6, 4),
     "Materi Pelatihan": (6, 29),
     "Program Pelatihan": (6, 29),
     "INSTRUKTUR": (7, 29),
     "Penyelenggaraan": (7, 29),
-    "NILAI INST": (6, 6),        # A..F (mengikuti 'Materi Pelatihan' via formula)
+    "NILAI INST": (6, 6),
 }
 
-# Sheet yang judulnya ("HASIL EVALUASI") ditulis literal (bukan formula ke
-# master) sehingga perlu disamakan manual ke "HASIL ANALISIS EVALUASI".
 TITLE_TEXT_CELLS = {
     "Materi Pelatihan": "A6",
     "Program Pelatihan": "A6",
@@ -50,10 +46,14 @@ TITLE_TEXT_CELLS = {
 
 REPORT_TITLE = "HASIL ANALISIS EVALUASI"
 
-# Baris-baris header tabel isian (nomor urut responden) di sheet master.
-# Kolom T..AA di baris-baris ini secara bawaan berisi nomor yang salah (22-29)
-# padahal seharusnya melanjutkan nomor primer (17-24).
 HEADER_ROWS = [13, 22, 30, 38]
+
+SECTION_LABELS = {
+    "Materi Pelatihan": ["Info mudah didapat", "Pendaftaran mudah", "Petunjuk pendaftaran jelas", "Program jelas"],
+    "Program Pelatihan": ["Program menarik", "Program bermanfaat", "Kompetensi meningkat", "Durasi sesuai"],
+    "INSTRUKTUR": ["Instruktur menguasai materi", "Kemampuan penyampaian instruktur", "Kemampuan mengelola peserta", "Sikap & teladan instruktur"],
+    "Penyelenggaraan": ["Pelayanan petugas", "Jadwal sesuai rencana", "Perlengkapan tepat waktu", "Sarana pelatihan memadai", "Sarana penunjang memadai"],
+}
 
 
 def _normalize(text: str) -> str:
@@ -62,7 +62,7 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _find_question_row(ws, question_text: str, cutoff: float = 0.55):
+def _find_question_row(ws, question_text: str, cutoff: float = 0.8):
     """Cari baris di kolom B yang cocok dengan teks pertanyaan (fuzzy)."""
     target = _normalize(question_text)
     best_row, best_ratio = None, 0.0
@@ -94,31 +94,18 @@ def kategori_nilai(score: float) -> str:
 
 
 def _format_training_title(training_title: str) -> str:
-    """'Industri dan Jasa' -> 'PELATIHAN KOMPETENSI BERBASIS INDUSTRI DAN JASA'."""
     name = re.sub(r"\s+", " ", str(training_title).strip()).upper()
     if not name:
         return ""
-    # Hindari duplikasi kalau user sudah mengetik prefiksnya sendiri.
     name = re.sub(r"^PELATIHAN KOMPETENSI BERBASIS\s+", "", name)
     return f"PELATIHAN KOMPETENSI BERBASIS {name}"
 
 
 def _format_program_title(program_name: str) -> str:
-    """'Daily Make Up 3' -> 'PROGRAM PELATIHAN DASAR DAILY MAKE UP PAKET 3'.
-    'Produksi Roti dan Kue 4 (Kab. Kolaka Timur)' -> 'PROGRAM PELATIHAN DASAR
-    PRODUKSI ROTI DAN KUE PAKET 4' (keterangan kab/kota dibuang).
-
-    - Selalu CAPSLOCK.
-    - Keterangan kab/kota dalam tanda kurung di akhir nama dibuang, supaya
-      angka batch tetap terdeteksi di posisi akhir.
-    - Kalau nama program diakhiri angka batch (mis. '... 3') dan belum ada
-      kata 'PAKET', kata 'PAKET' otomatis disisipkan sebelum angka tsb.
-    """
     name = re.sub(r"\s+", " ", str(program_name).strip()).upper()
     if not name:
         return ""
     name = re.sub(r"^PROGRAM PELATIHAN DASAR\s+", "", name)
-    # Buang keterangan kab/kota dalam tanda kurung, mis. "(KAB. KOLAKA TIMUR)".
     name = re.sub(r"\s*\([^)]*\)", "", name)
     name = re.sub(r"\s+", " ", name).strip()
     if "PAKET" not in name:
@@ -129,31 +116,21 @@ def _format_program_title(program_name: str) -> str:
 
 
 def _add_title_separator_line(ws, row: int = 6, min_col: int = 1, max_col: int = 29):
-    """Tambahkan garis horizontal (double line) tepat di atas 'HASIL ANALISIS
-    EVALUASI', memisahkan blok kop surat dari blok judul laporan."""
     thin_double = Side(style="double", color="000000")
     for col in range(min_col, max_col + 1):
         cell = ws.cell(row=row, column=col)
         existing = cell.border
         cell.border = Border(
-            top=thin_double,
-            bottom=existing.bottom,
-            left=existing.left,
-            right=existing.right,
+            top=thin_double, bottom=existing.bottom,
+            left=existing.left, right=existing.right,
         )
 
 
 def _sync_titles_and_separator_lines(wb):
-    """Pasang garis pemisah di atas judul laporan pada SEMUA sheet, dan
-    samakan teks judul ("HASIL ANALISIS EVALUASI") supaya semua sheet
-    konsisten dengan sheet master -- beberapa sheet turunan sebelumnya
-    punya teks literal "HASIL EVALUASI" yang tidak sinkron."""
     for sheet_name, (row, max_col) in SHEET_TITLE_ROWS.items():
         if sheet_name not in wb.sheetnames:
             continue
-        ws = wb[sheet_name]
-        _add_title_separator_line(ws, row=row, max_col=max_col)
-
+        _add_title_separator_line(wb[sheet_name], row=row, max_col=max_col)
     for sheet_name, cell_coord in TITLE_TEXT_CELLS.items():
         if sheet_name not in wb.sheetnames:
             continue
@@ -161,43 +138,30 @@ def _sync_titles_and_separator_lines(wb):
 
 
 def _fix_secondary_header_numbers(ws):
-    """Perbaiki penomoran responden 17-24 pada kolom cadangan T..AA yang di
-    template bawaan salah tertulis 22-29."""
     for row in HEADER_ROWS:
-        if ws.cell(row=row, column=19).value != "JUMLAH":  # kolom S
+        if ws.cell(row=row, column=19).value != "JUMLAH":
             continue
         for i, col in enumerate(SECONDARY_COLS):
-            ws[f"{col}{row}"] = DEFAULT_CAPACITY + i + 1  # 17, 18, ..., 24
+            ws[f"{col}{row}"] = DEFAULT_CAPACITY + i + 1
 
 
 def _update_divisor_everywhere(wb, n_respondents: int, use_secondary: bool):
-    """Perbaiki pembagi '/12' di rumus SUM pada kolom S, di SEMUA sheet
-    (karena tiap sheet punya rumus SUM sendiri, bukan rujukan ke sheet lain)."""
-    sum_range = (
-        f"C{{r}}:R{{r}},T{{r}}:AA{{r}}" if use_secondary else "C{r}:R{r}"
-    )
+    sum_range = f"C{{r}}:R{{r}},T{{r}}:AA{{r}}" if use_secondary else "C{r}:R{r}"
     for ws in wb.worksheets:
-        for row in ws.iter_rows(min_col=19, max_col=19):  # kolom S
+        for row in ws.iter_rows(min_col=19, max_col=19):
             cell = row[0]
             if isinstance(cell.value, str) and cell.value.startswith("=SUM(") and "/12" in cell.value:
                 r = cell.row
-                new_range = sum_range.format(r=r)
-                cell.value = f"=SUM({new_range})/{n_respondents}"
+                cell.value = f"=SUM({sum_range.format(r=r)})/{n_respondents}"
 
 
-def _style_histogram_chart(wb, training_title: str):
-    """Samakan style chart di sheet 'Histogram' dengan referensi yang
-    diminta: batang abu-abu gelap solid (tanpa border), judul tanpa garis
-    bawah, dan '(NAMA PELATIHAN)' pada judul diganti nama pelatihan aktual.
-    Sumbu Y dikunci 4,3 - 4,8 (interval 0,1) sesuai contoh."""
+def _style_histogram_chart(wb, training_title: str, section_values=None):
     if "Histogram" not in wb.sheetnames:
         return
     ws = wb["Histogram"]
     if not ws._charts:
         return
     chart = ws._charts[0]
-
-    # ---- Judul: ganti "(NAMA PELATIHAN)" jadi nama pelatihan aktual ----
     try:
         runs = chart.title.tx.rich.p[0].r
         label = re.sub(r"\s+", " ", str(training_title).strip()).upper()
@@ -205,46 +169,43 @@ def _style_histogram_chart(wb, training_title: str):
             if run.t and "NAMA PELATIHAN" in run.t:
                 run.t = f" ({label})" if label else " (NAMA PELATIHAN)"
             if run.rPr is not None:
-                run.rPr.u = None   # buang garis bawah
-                run.rPr.b = True   # tebal, sesuai contoh
+                run.rPr.u = None
+                run.rPr.b = True
     except (AttributeError, IndexError):
         pass
-
-    # ---- Batang: abu-abu gelap solid, tanpa border ----
     for ser in chart.series:
         ser.graphicalProperties.solidFill = "595959"
         ser.graphicalProperties.line.noFill = True
 
-    # ---- Sumbu nilai: 4,3 - 4,8, interval 0,1 (sesuai contoh) ----
-    chart.y_axis.scaling.min = 4.3
-    chart.y_axis.scaling.max = 4.8
+    # Skala sumbu Y menyesuaikan data aktual (bukan hardcode), supaya batang
+    # selalu terlihat walau nilainya di luar rentang 4.3-4.8 (mis. kategori
+    # CUKUP/KURANG). Tetap "zoom in" ala contoh referensi, tapi dinamis.
+    if section_values:
+        lo = min(section_values)
+        hi = max(section_values)
+    else:
+        lo, hi = 0, 5
+    import math
+    axis_min = max(0, math.floor(lo * 10) / 10 - 0.2)
+    axis_max = min(5, math.ceil(hi * 10) / 10 + 0.2)
+    if axis_max - axis_min < 0.5:
+        axis_max = min(5, axis_min + 0.5)
+    chart.y_axis.scaling.min = round(axis_min, 1)
+    chart.y_axis.scaling.max = round(axis_max, 1)
     chart.y_axis.majorUnit = 0.1
 
 
 def convert_xlsx_to_pdf(xlsx_bytes: bytes, timeout: int = 90) -> bytes:
-    """Konversi file .xlsx (bytes) menjadi .pdf (bytes) memakai LibreOffice
-    headless. Butuh binary 'soffice' tersedia di server (paket sistem
-    'libreoffice-calc' — bukan pip package, lihat packages.txt).
-
-    Dipisah ke fungsi sendiri (bukan bagian dari generate_official_report)
-    supaya proses Excel-nya tidak gagal/lambat kalau LibreOffice belum
-    terpasang; caller bisa menangani ini sebagai fitur opsional.
-    """
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
     if not soffice:
         raise RuntimeError(
             "LibreOffice ('soffice') tidak ditemukan di server. "
             "Tambahkan 'libreoffice-calc' ke packages.txt agar konversi ke PDF bisa jalan."
         )
-
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_dir_path = Path(tmp_dir)
         in_path = tmp_dir_path / f"{uuid.uuid4().hex}.xlsx"
         in_path.write_bytes(xlsx_bytes)
-
-        # --convert-to pdf:calc_pdf_Export -> pakai filter Calc (bukan Writer)
-        # supaya layout print per-sheet (page setup, area cetak) yang sudah
-        # diatur di template ikut terpakai.
         result = subprocess.run(
             [
                 soffice, "--headless", "--norestore",
@@ -254,20 +215,51 @@ def convert_xlsx_to_pdf(xlsx_bytes: bytes, timeout: int = 90) -> bytes:
             ],
             capture_output=True, timeout=timeout,
         )
-
         out_path = in_path.with_suffix(".pdf")
         if not out_path.exists():
             stderr = result.stderr.decode("utf-8", errors="ignore")
-            raise RuntimeError(f"Konversi ke PDF gagal. Detail teknis: {stderr or result.stdout.decode('utf-8', errors='ignore')}")
-
+            raise RuntimeError(
+                f"Konversi ke PDF gagal. Detail teknis: "
+                f"{stderr or result.stdout.decode('utf-8', errors='ignore')}"
+            )
         return out_path.read_bytes()
+
+
+def _rewrite_cross_sheet_formulas(wb, row_map: dict, canonical_questions: dict, used_cols: list):
+    """PERBAIKAN BUG UTAMA: openpyxl kadang merusak formula 'shared formula'
+    bawaan Excel saat file dibuka lalu disimpan ulang -- rujukan sel tunggal
+    (mis. ='KOLOM ISIAN'!O41) bisa berubah jadi rentang yang salah
+    (mis. ='KOLOM ISIAN'!O39:AD39), sehingga sheet turunan membaca baris yang
+    keliru.
+
+    Solusi: TULIS ULANG secara eksplisit & deterministik setiap formula
+    rujukan-silang di sheet turunan (Materi Pelatihan, Program Pelatihan,
+    INSTRUKTUR, Penyelenggaraan) untuk kolom-kolom responden, terlepas dari
+    apa pun isi formula aslinya. Ini juga sekaligus memperbaiki tampilan
+    '0' di sel yang seharusnya kosong (dibungkus IF supaya sel kosong di
+    KOLOM ISIAN tetap tampil kosong, bukan 0).
+    """
+    for sheet_name in VIEW_SHEETS:
+        if sheet_name not in wb.sheetnames:
+            continue
+        ws = wb[sheet_name]
+        for label, master_row in row_map.items():
+            question_text = canonical_questions.get(label)
+            if not question_text:
+                continue
+            view_row = _find_question_row(ws, question_text)
+            if not view_row:
+                continue
+            for col in used_cols:
+                ref = f"'{MASTER_SHEET}'!{col}{master_row}"
+                ws[f"{col}{view_row}"] = f'=IF({ref}="","",{ref})'
 
 
 def generate_official_report(
     template_path: str,
     df_filtered,
-    score_col_map: dict,          # label_ringkas -> nama kolom asli di dataframe
-    canonical_questions: dict,     # label_ringkas -> teks pertanyaan kanonik
+    score_col_map: dict,
+    canonical_questions: dict,
     program_name: str,
     training_title: str = "",
     date_text: str = "",
@@ -279,20 +271,14 @@ def generate_official_report(
 
     capped = min(n, MAX_RESPONDENTS)
     use_secondary = capped > DEFAULT_CAPACITY
+    all_cols = PRIMARY_COLS + (SECONDARY_COLS if use_secondary else [])
 
     wb = openpyxl.load_workbook(template_path)
     ws_master = wb[MASTER_SHEET]
 
-    # ---- Perbaiki penomoran kolom cadangan (17-24) yang salah di template ----
     _fix_secondary_header_numbers(ws_master)
-
-    # ---- Garis pemisah di atas judul + samakan teks judul di semua sheet ----
     _sync_titles_and_separator_lines(wb)
 
-    # ---- Style chart Histogram + judul dinamis sesuai nama pelatihan ----
-    _style_histogram_chart(wb, training_title or program_name)
-
-    # ---- Header ----
     ws_master["A6"] = REPORT_TITLE
     if training_title:
         ws_master["A7"] = _format_training_title(training_title)
@@ -306,7 +292,7 @@ def generate_official_report(
             wb["INSTRUKTUR"]["C12"] = f"INSTRUKTUR : {instructor_name}"
 
     # ---- Cocokkan tiap pertanyaan skor dengan baris di sheet master ----
-    row_map = {}  # label -> row index di KOLOM ISIAN
+    row_map = {}
     for label, question in canonical_questions.items():
         if label not in score_col_map:
             continue
@@ -314,8 +300,7 @@ def generate_official_report(
         if row:
             row_map[label] = row
 
-    # ---- Tulis nilai peserta ----
-    all_cols = PRIMARY_COLS + SECONDARY_COLS
+    # ---- Tulis nilai peserta (literal) di sheet master ----
     values_by_label = {}
     for label, row in row_map.items():
         col_name = score_col_map[label]
@@ -329,19 +314,26 @@ def generate_official_report(
         )
         values_by_label[label] = values
 
-        # bersihkan slot lama
         for col in all_cols:
             ws_master[f"{col}{row}"] = None
-
         for i, val in enumerate(values):
-            col = all_cols[i]
-            ws_master[f"{col}{row}"] = val
+            ws_master[f"{all_cols[i]}{row}"] = val
 
-    # ---- Perbaiki pembagi (divisor) di semua sheet ----
+    # ---- Tulis ulang formula rujukan-silang di sheet turunan (perbaikan Bug 1 & 2) ----
+    _rewrite_cross_sheet_formulas(wb, row_map, canonical_questions, all_cols)
+
+    # ---- Style chart Histogram (skala sumbu menyesuaikan data aktual) ----
+    section_avgs = []
+    for labels in SECTION_LABELS.values():
+        means = [sum(values_by_label[l]) / len(values_by_label[l]) for l in labels if l in values_by_label and values_by_label[l]]
+        if means:
+            section_avgs.append(sum(means) / len(means))
+    _style_histogram_chart(wb, training_title or program_name, section_avgs)
+
+    # ---- Perbaiki pembagi (divisor) & rentang SUM di semua sheet ----
     actual_n = max((len(v) for v in values_by_label.values()), default=capped)
     _update_divisor_everywhere(wb, actual_n, use_secondary)
 
-    # ---- Paksa Excel menghitung ulang rumus saat file dibuka ----
     wb.calculation.fullCalcOnLoad = True
 
     buf = BytesIO()
