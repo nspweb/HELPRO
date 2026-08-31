@@ -7,7 +7,10 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 
-from report_generator import generate_official_report, convert_xlsx_to_pdf, MAX_RESPONDENTS, DEFAULT_CAPACITY
+from report_generator import (
+    generate_official_report, convert_xlsx_to_pdf, generate_comment_recap,
+    MAX_RESPONDENTS, DEFAULT_CAPACITY,
+)
 
 # --------------------------------------------------------------------------
 # KONFIGURASI HALAMAN & GAYA VISUAL
@@ -25,12 +28,14 @@ PRIMARY = "#1F3B57"      # navy - warna utama
 ACCENT = "#2E6F95"       # biru kalem - aksen
 MUTED = "#6B7A8F"        # abu kebiruan - teks sekunder
 BG_SOFT = "#F4F6F8"
+BORDER = "#E2E8EF"
+SUCCESS = "#1E7A4C"
 
 st.markdown(
     f"""
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
     <style>
-        .block-container {{ padding-top: 2rem; }}
+        .block-container {{ padding-top: 2rem; max-width: 1200px; }}
 
         h1, h2, h3 {{ color: {PRIMARY}; font-weight: 700; }}
 
@@ -39,7 +44,7 @@ st.markdown(
             margin-bottom: 0.1rem;
         }}
         .app-header i {{ font-size: 1.6rem; color: {ACCENT}; }}
-        .app-subtitle {{ color: {MUTED}; font-size: 0.95rem; margin-top: -0.4rem; }}
+        .app-subtitle {{ color: {MUTED}; font-size: 0.95rem; margin-top: -0.4rem; margin-bottom: 1.5rem; }}
 
         .section-title {{
             display: flex; align-items: center; gap: 0.5rem;
@@ -50,22 +55,48 @@ st.markdown(
 
         div[data-testid="stMetric"] {{
             background: {BG_SOFT};
-            border: 1px solid #E2E8EF;
+            border: 1px solid {BORDER};
             border-radius: 10px;
             padding: 0.9rem 1rem;
         }}
 
-        .stTabs [data-baseweb="tab"] {{
-            font-weight: 600;
-        }}
+        .stTabs [data-baseweb="tab"] {{ font-weight: 600; }}
 
         .info-note {{
             background: {BG_SOFT};
             border-left: 3px solid {ACCENT};
-            padding: 0.6rem 0.9rem;
+            padding: 0.65rem 0.9rem;
             border-radius: 4px;
             color: {MUTED};
             font-size: 0.9rem;
+        }}
+
+        /* --- Kartu upload (langkah 1) --- */
+        .upload-card {{
+            background: white;
+            border: 1px solid {BORDER};
+            border-radius: 14px;
+            padding: 2rem 2.2rem;
+            margin-top: 0.5rem;
+        }}
+        .upload-card h3 {{ margin-top: 0; }}
+        .step-badge {{
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 1.6rem; height: 1.6rem; border-radius: 50%;
+            background: {ACCENT}; color: white; font-weight: 700; font-size: 0.85rem;
+            margin-right: 0.5rem;
+        }}
+        .file-summary {{
+            display: flex; align-items: center; gap: 0.6rem;
+            background: {BG_SOFT}; border: 1px solid {BORDER}; border-radius: 8px;
+            padding: 0.7rem 1rem; margin: 0.8rem 0;
+        }}
+        .file-summary i {{ color: {SUCCESS}; font-size: 1.2rem; }}
+
+        .status-pill {{
+            display: inline-flex; align-items: center; gap: 0.4rem;
+            background: #EAF4EE; color: {SUCCESS}; border: 1px solid #CFE8D9;
+            border-radius: 999px; padding: 0.25rem 0.8rem; font-size: 0.85rem; font-weight: 600;
         }}
     </style>
     <div class="app-header">
@@ -147,124 +178,178 @@ COMMENT_LABELS = {
 
 
 # --------------------------------------------------------------------------
-# LOAD DATA
+# LOAD DATA (helper murni, dipanggil saat tombol submit ditekan)
 # --------------------------------------------------------------------------
-@st.cache_data(show_spinner="Membaca file Excel...")
-def get_sheet_names(file):
-    return pd.ExcelFile(file).sheet_names
+@st.cache_data(show_spinner=False)
+def get_sheet_names(file_bytes: bytes):
+    return pd.ExcelFile(io.BytesIO(file_bytes)).sheet_names
 
 
-@st.cache_data(show_spinner="Membaca data sheet...")
-def load_data(file, sheet_name) -> pd.DataFrame:
-    df = pd.read_excel(file, sheet_name=sheet_name)
+@st.cache_data(show_spinner=False)
+def load_data(file_bytes: bytes, sheet_name: str) -> pd.DataFrame:
+    df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name)
     df.columns = [str(c) for c in df.columns]
     return df
 
 
+def process_file(file_bytes: bytes, sheet_name: str):
+    """Baca data, cocokkan kolom otomatis, siapkan semua yang dibutuhkan
+    dashboard. Mengembalikan dict siap simpan ke session_state, atau
+    melempar ValueError dengan pesan yang ramah kalau kolom program tidak
+    ketemu sama sekali."""
+    df_raw = load_data(file_bytes, sheet_name)
+    all_columns = list(df_raw.columns)
+
+    program_col = best_match(PROGRAM_CANONICAL, all_columns)
+    if not program_col:
+        raise ValueError(
+            "Kolom 'Program pelatihan yang diikuti' tidak ditemukan di sheet ini. "
+            "Pastikan file yang diupload adalah hasil Google Form evaluasi pelatihan, "
+            "lalu coba lagi."
+        )
+    timestamp_col = best_match(TIMESTAMP_CANONICAL, all_columns)
+    info_col = best_match(INFO_SOURCE_CANONICAL, all_columns)
+
+    score_col_map = {}
+    for label, question in SCORE_QUESTIONS.items():
+        match = best_match(question, all_columns)
+        if match:
+            score_col_map[label] = match
+
+    comment_col_map = {}
+    for label, question in COMMENT_LABELS.items():
+        match = best_match(question, all_columns)
+        if match:
+            comment_col_map[label] = match
+
+    for label, col in list(score_col_map.items()):
+        numeric_series = pd.to_numeric(df_raw[col], errors="coerce")
+        if numeric_series.notna().sum() == 0:
+            del score_col_map[label]
+        else:
+            df_raw[col] = numeric_series
+
+    if timestamp_col:
+        df_raw[timestamp_col] = pd.to_datetime(df_raw[timestamp_col], errors="coerce")
+
+    return {
+        "df_raw": df_raw,
+        "sheet_choice": sheet_name,
+        "program_col": program_col,
+        "timestamp_col": timestamp_col,
+        "info_col": info_col,
+        "score_col_map": score_col_map,
+        "comment_col_map": comment_col_map,
+    }
+
+
 # --------------------------------------------------------------------------
-# SIDEBAR - UPLOAD
+# STATE
 # --------------------------------------------------------------------------
+st.session_state.setdefault("data_ready", False)
+st.session_state.setdefault("pending_file", None)
+
+
+def reset_data():
+    for key in ["data_ready", "df_raw", "sheet_choice", "program_col", "timestamp_col",
+                "info_col", "score_col_map", "comment_col_map", "pending_file",
+                "report_bytes", "report_meta", "report_fname_base", "report_pdf_bytes"]:
+        st.session_state.pop(key, None)
+    st.session_state["data_ready"] = False
+
+
+# ==========================================================================
+# LANGKAH 1: UPLOAD & PROSES (ditampilkan sampai data siap)
+# ==========================================================================
+if not st.session_state["data_ready"]:
+    st.markdown('<div class="upload-card">', unsafe_allow_html=True)
+    st.markdown(
+        '<h3><span class="step-badge">1</span>Upload Data Evaluasi</h3>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Upload file Excel (.xlsx) hasil Google Form evaluasi pelatihan, lalu klik Proses Data.")
+
+    uploaded_file = st.file_uploader(
+        "File Excel (.xlsx)",
+        type=["xlsx"],
+        label_visibility="collapsed",
+    )
+
+    sheet_choice = None
+    if uploaded_file is not None:
+        file_bytes = uploaded_file.getvalue()
+        st.markdown(
+            f'<div class="file-summary"><i class="bi bi-file-earmark-check-fill"></i>'
+            f"<div><b>{uploaded_file.name}</b><br>"
+            f'<span style="color:{MUTED}; font-size:0.85rem;">{len(file_bytes)/1024:.0f} KB</span></div></div>',
+            unsafe_allow_html=True,
+        )
+
+        try:
+            sheet_names = get_sheet_names(file_bytes)
+        except Exception:
+            st.error("File tidak bisa dibaca. Pastikan formatnya .xlsx dan tidak rusak.")
+            sheet_names = []
+
+        if sheet_names:
+            if len(sheet_names) > 1:
+                sheet_choice = st.selectbox("Pilih sheet yang berisi data responden", options=sheet_names, index=0)
+            else:
+                sheet_choice = sheet_names[0]
+
+            st.write("")
+            submit = st.button(
+                "Proses Data",
+                type="primary",
+                icon=":material/play_arrow:",
+                use_container_width=True,
+            )
+            if submit:
+                with st.spinner("Memproses data..."):
+                    try:
+                        result = process_file(file_bytes, sheet_choice)
+                        for k, v in result.items():
+                            st.session_state[k] = v
+                        st.session_state["data_ready"] = True
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
+    else:
+        st.markdown(
+            '<div class="info-note"><i class="bi bi-info-circle"></i>&nbsp; '
+            "Belum ada file yang dipilih. Klik area di atas untuk memilih file dari komputer Anda.</div>",
+            unsafe_allow_html=True,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
+
+
+# ==========================================================================
+# LANGKAH 2: DASHBOARD (tampil setelah data diproses)
+# ==========================================================================
+df_raw = st.session_state["df_raw"]
+sheet_choice = st.session_state["sheet_choice"]
+program_col = st.session_state["program_col"]
+timestamp_col = st.session_state["timestamp_col"]
+info_col = st.session_state["info_col"]
+score_col_map = st.session_state["score_col_map"]
+comment_col_map = st.session_state["comment_col_map"]
+
 with st.sidebar:
     st.markdown(
-        '<div class="section-title"><i class="bi bi-sliders"></i>Data &amp; Filter</div>',
+        '<span class="status-pill"><i class="bi bi-check-circle-fill"></i>Data siap</span>',
         unsafe_allow_html=True,
     )
+    st.caption(f"Sheet: {sheet_choice} • {len(df_raw)} responden")
+    if st.button("Upload Data Baru", icon=":material/upload_file:", use_container_width=True):
+        reset_data()
+        st.rerun()
 
-uploaded_file = st.sidebar.file_uploader(
-    "Upload file Excel hasil Google Form (.xlsx)",
-    type=["xlsx"],
-)
-
-if uploaded_file is None:
     st.markdown(
-        '<div class="info-note"><i class="bi bi-info-circle"></i>&nbsp; '
-        "Silakan upload file Excel hasil Google Form (.xlsx) di sidebar kiri "
-        "untuk mulai memfilter dan menganalisis data.</div>",
+        '<div class="section-title"><i class="bi bi-sliders"></i>Filter</div>',
         unsafe_allow_html=True,
     )
-    st.stop()
 
-sheet_names = get_sheet_names(uploaded_file)
-if len(sheet_names) > 1:
-    sheet_choice = st.sidebar.selectbox("Pilih sheet", options=sheet_names, index=0)
-else:
-    sheet_choice = sheet_names[0]
-
-df_raw = load_data(uploaded_file, sheet_choice)
-all_columns = list(df_raw.columns)
-
-# --------------------------------------------------------------------------
-# AUTO-MATCH KOLOM PENTING (dengan fallback manual)
-# --------------------------------------------------------------------------
-auto_program_col = best_match(PROGRAM_CANONICAL, all_columns)
-auto_timestamp_col = best_match(TIMESTAMP_CANONICAL, all_columns)
-auto_info_col = best_match(INFO_SOURCE_CANONICAL, all_columns)
-
-with st.sidebar.expander(
-    "Pemetaan kolom" + ("" if auto_program_col else " -- perlu dicek"),
-    expanded=(auto_program_col is None),
-):
-    st.caption(
-        "Kolom dicocokkan otomatis. Kalau salah / tidak ketemu, pilih manual di sini."
-    )
-    options_with_none = ["(tidak ada)"] + all_columns
-
-    program_col = st.selectbox(
-        "Kolom: Program pelatihan yang diikuti",
-        options=all_columns,
-        index=all_columns.index(auto_program_col) if auto_program_col in all_columns else 0,
-    )
-
-    ts_index = (
-        options_with_none.index(auto_timestamp_col)
-        if auto_timestamp_col in options_with_none
-        else 0
-    )
-    timestamp_col_choice = st.selectbox(
-        "Kolom: Timestamp (opsional)", options=options_with_none, index=ts_index
-    )
-    timestamp_col = None if timestamp_col_choice == "(tidak ada)" else timestamp_col_choice
-
-    info_index = (
-        options_with_none.index(auto_info_col) if auto_info_col in options_with_none else 0
-    )
-    info_col_choice = st.selectbox(
-        "Kolom: Sumber informasi pelatihan (opsional)",
-        options=options_with_none,
-        index=info_index,
-    )
-    info_col = None if info_col_choice == "(tidak ada)" else info_col_choice
-
-if not program_col:
-    st.error(
-        "Tidak berhasil menemukan kolom 'Program pelatihan yang diikuti'. "
-        "Silakan pilih manual di panel Pemetaan kolom pada sidebar."
-    )
-    st.stop()
-
-# cocokkan kolom-kolom skor & komentar
-score_col_map = {}
-for label, question in SCORE_QUESTIONS.items():
-    match = best_match(question, all_columns)
-    if match:
-        score_col_map[label] = match
-
-comment_col_map = {}
-for label, question in COMMENT_LABELS.items():
-    match = best_match(question, all_columns)
-    if match:
-        comment_col_map[label] = match
-
-for label, col in list(score_col_map.items()):
-    numeric_series = pd.to_numeric(df_raw[col], errors="coerce")
-    if numeric_series.notna().sum() == 0:
-        del score_col_map[label]
-    else:
-        df_raw[col] = numeric_series
-
-# --------------------------------------------------------------------------
-# SIDEBAR - FILTER
-# --------------------------------------------------------------------------
 program_options = sorted(df_raw[program_col].dropna().astype(str).unique().tolist())
 selected_programs = st.sidebar.multiselect(
     "Program pelatihan yang diikuti",
@@ -273,9 +358,7 @@ selected_programs = st.sidebar.multiselect(
     help="Kosongkan lalu pilih ulang untuk memfilter satu/lebih program tertentu.",
 )
 
-df_work = df_raw.copy()
-if timestamp_col:
-    df_work[timestamp_col] = pd.to_datetime(df_work[timestamp_col], errors="coerce")
+df_work = df_raw
 
 # --------------------------------------------------------------------------
 # APPLY FILTERS
@@ -311,8 +394,8 @@ st.divider()
 # --------------------------------------------------------------------------
 # TABS
 # --------------------------------------------------------------------------
-tab_data, tab_ringkasan, tab_komentar, tab_resmi = st.tabs(
-    ["Data Terfilter", "Ringkasan & Grafik", "Komentar & Keluhan", "Laporan Resmi"]
+tab_data, tab_ringkasan, tab_komentar, tab_rekap_komentar, tab_resmi = st.tabs(
+    ["Data Terfilter", "Ringkasan & Grafik", "Komentar & Keluhan", "Rekap Komentar", "Laporan Resmi"]
 )
 
 # --- TAB 1: DATA TABEL ---
@@ -441,7 +524,62 @@ with tab_komentar:
                     for _, row in group.iterrows():
                         st.markdown(f"- {row[picked_col]}")
 
-# --- TAB 4: LAPORAN RESMI (format Kemnaker, sama persis dengan template) ---
+# --- TAB 4: REKAP KOMENTAR (1 baris per responden, format resmi) ---
+with tab_rekap_komentar:
+    section_title("bi-file-earmark-spreadsheet", "Rekap Komentar per Responden")
+    st.markdown(
+        '<div class="info-note"><i class="bi bi-info-circle"></i>&nbsp; '
+        "Rekap ini menghasilkan satu baris per responden (jumlah baris selalu "
+        "sama dengan jumlah peserta) dengan format kolom: <b>NO. | Sumber Informasi | "
+        "Komentar Pelatihan | Komentar Instruktur | Komentar Penyelenggaraan | "
+        "Keluhan Penyelenggaraan</b> -- responden dengan komentar kosong tetap "
+        "disertakan, tidak dilewati.</div>",
+        unsafe_allow_html=True,
+    )
+    st.write("")
+
+    recap_program = st.selectbox(
+        "Program pelatihan untuk rekap ini",
+        options=program_options,
+        index=0,
+        key="recap_program_select",
+    )
+    df_recap = df_work[df_work[program_col].astype(str) == recap_program]
+    n_recap = len(df_recap)
+
+    if n_recap == 0:
+        st.warning("Tidak ada responden pada program ini.")
+    elif not comment_col_map:
+        st.warning("Tidak ada kolom komentar yang terdeteksi pada sheet ini.")
+    else:
+        st.metric("Jumlah Responden (= jumlah baris rekap)", n_recap)
+
+        recap_bytes = generate_comment_recap(df_recap, info_col, comment_col_map)
+
+        # pratinjau tabel dengan header format resmi
+        from report_generator import COMMENT_RECAP_HEADERS
+        preview_rows = []
+        for i, (_, r) in enumerate(df_recap.iterrows(), start=1):
+            preview_rows.append({
+                COMMENT_RECAP_HEADERS[0]: i,
+                COMMENT_RECAP_HEADERS[1]: r.get(info_col, "") if info_col else "",
+                COMMENT_RECAP_HEADERS[2]: r.get(comment_col_map.get("Komentar/saran program pelatihan", ""), ""),
+                COMMENT_RECAP_HEADERS[3]: r.get(comment_col_map.get("Komentar/saran instruktur", ""), ""),
+                COMMENT_RECAP_HEADERS[4]: r.get(comment_col_map.get("Komentar/saran penyelenggaraan", ""), ""),
+                COMMENT_RECAP_HEADERS[5]: r.get(comment_col_map.get("Keluhan penyelenggaraan", ""), ""),
+            })
+        st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+
+        st.download_button(
+            "Unduh Rekap Komentar (.xlsx)",
+            data=recap_bytes,
+            file_name=f"Komentar_Peserta_{recap_program[:40].strip().replace(' ', '_')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            icon=":material/download:",
+            use_container_width=True,
+        )
+
+# --- TAB 5: LAPORAN RESMI (format Kemnaker, sama persis dengan template) ---
 with tab_resmi:
     section_title("bi-file-earmark-spreadsheet", "Ekspor ke Format Laporan Resmi")
     st.markdown(

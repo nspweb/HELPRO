@@ -1,4 +1,5 @@
 libreoffice
+libreoffice-calc
 libreoffice-common
 libreoffice-writer
 fontconfig

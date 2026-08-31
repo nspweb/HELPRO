@@ -100,12 +100,91 @@ def kategori_nilai(score: float) -> str:
     return "TIDAK BAIK"
 
 
+COMMENT_RECAP_HEADERS = [
+    "NO.",
+    "Dari mana anda mendapatkan informasi tentang pelatihan?",
+    "Komentar dan saran Anda terhadap Pelatihan ",
+    "Komentar dan saran Anda terhadap Instruktur",
+    "Komentar dan saran Anda terhadap penyelenggaraan pelatihan ",
+    "Keluhan terhadap penyelenggaraan pelatihan ",
+]
+
+
+def generate_comment_recap(
+    df_filtered,
+    info_col: str | None,
+    comment_col_map: dict,
+    training_comment_label: str = "Komentar/saran program pelatihan",
+    instructor_comment_label: str = "Komentar/saran instruktur",
+    organizer_comment_label: str = "Komentar/saran penyelenggaraan",
+    complaint_label: str = "Keluhan penyelenggaraan",
+) -> bytes:
+    """Buat rekap komentar 1-baris-per-responden (TIDAK membuang responden
+    yang kolom komentarnya kosong -- jumlah baris harus selalu sama dengan
+    jumlah responden pada data terfilter), dengan header & urutan kolom
+    persis format resmi:
+    NO. | Sumber informasi | Komentar Pelatihan | Komentar Instruktur |
+    Komentar Penyelenggaraan | Keluhan Penyelenggaraan.
+    """
+    n = len(df_filtered)
+
+    def get_col(label):
+        col = comment_col_map.get(label)
+        if col and col in df_filtered.columns:
+            return df_filtered[col].astype(str).where(df_filtered[col].notna(), "").tolist()
+        return [""] * n
+
+    info_values = (
+        df_filtered[info_col].astype(str).where(df_filtered[info_col].notna(), "").tolist()
+        if info_col and info_col in df_filtered.columns
+        else [""] * n
+    )
+
+    data = {
+        COMMENT_RECAP_HEADERS[0]: list(range(1, n + 1)),
+        COMMENT_RECAP_HEADERS[1]: info_values,
+        COMMENT_RECAP_HEADERS[2]: get_col(training_comment_label),
+        COMMENT_RECAP_HEADERS[3]: get_col(instructor_comment_label),
+        COMMENT_RECAP_HEADERS[4]: get_col(organizer_comment_label),
+        COMMENT_RECAP_HEADERS[5]: get_col(complaint_label),
+    }
+    import pandas as pd
+    df_out = pd.DataFrame(data, columns=COMMENT_RECAP_HEADERS)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Komentar"
+
+    from openpyxl.styles import Font
+    ws.append(COMMENT_RECAP_HEADERS)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+
+    for row in df_out.itertuples(index=False):
+        ws.append(list(row))
+
+    widths = [5.5, 27.5, 27, 31, 32, 31]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    from openpyxl.styles import Alignment
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+    ws.row_dimensions[1].height = 20
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def _format_training_title(training_title: str) -> str:
     name = re.sub(r"\s+", " ", str(training_title).strip()).upper()
     if not name:
         return ""
-    name = re.sub(r"^PELATIHAN KOMPETENSI BERBASIS\s+", "", name)
-    return f"PELATIHAN KOMPETENSI BERBASIS {name}"
+    name = re.sub(r"^PELATIHAN BERBASIS KOMPETENSI KEJURUAN\s+", "", name)
+    name = re.sub(r"^PELATIHAN KOMPETENSI BERBASIS\s+", "", name)  # kompatibel data lama
+    return f"PELATIHAN BERBASIS KOMPETENSI KEJURUAN {name}"
 
 
 def _format_program_title(program_name: str) -> str:
