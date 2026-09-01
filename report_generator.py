@@ -155,10 +155,12 @@ def generate_comment_recap(
     ws = wb.active
     ws.title = "Komentar"
 
-    from openpyxl.styles import Font
+    from openpyxl.styles import Font, Alignment
     ws.append(COMMENT_RECAP_HEADERS)
     for cell in ws[1]:
         cell.font = Font(bold=True)
+        cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+    ws.row_dimensions[1].height = 45
 
     for row in df_out.itertuples(index=False):
         ws.append(list(row))
@@ -167,11 +169,20 @@ def generate_comment_recap(
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-    from openpyxl.styles import Alignment
     for row in ws.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(wrap_text=True, vertical="top")
-    ws.row_dimensions[1].height = 20
+
+    # ---- Page setup: landscape, ukuran F4 (215 x 330 mm), fit width 1 page,
+    # tinggi otomatis, dan tampilan default "Page Break Preview". ----
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperWidth = "215mm"
+    ws.page_setup.paperHeight = "330mm"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0  # 0 = tinggi menyesuaikan otomatis
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_options.horizontalCentered = False
+    ws.sheet_view.view = "pageBreakPreview"
 
     buf = BytesIO()
     wb.save(buf)
