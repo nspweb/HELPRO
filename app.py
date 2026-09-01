@@ -12,9 +12,6 @@ from report_generator import (
     MAX_RESPONDENTS, DEFAULT_CAPACITY,
 )
 
-# --------------------------------------------------------------------------
-# KONFIGURASI HALAMAN & GAYA VISUAL
-# --------------------------------------------------------------------------
 st.set_page_config(
     page_title="Dashboard Evaluasi Pelatihan",
     page_icon=":bar_chart:",
